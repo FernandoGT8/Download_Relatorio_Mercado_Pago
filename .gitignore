@@ -75,6 +75,8 @@ mercado_pago_robo_corrigido.py
 mercado_pago_robo_melhorado.py
 mercado_pago_robo_sem_item_extra.py
 mercado_pago_robo_sem_falso_erro.py
+robo_mercado_pago_corrigido_modal_ver_detalhes.py
+robo_mercado_pago_corrigido_descricao_venda.py
 *.bat
 
 

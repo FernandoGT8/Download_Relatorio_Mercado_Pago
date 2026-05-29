@@ -377,7 +377,7 @@ def definir_arquivos_execucao(periodo: Periodo) -> ArquivosExecucao:
     )
 
     planilha = pasta_mes / nome_planilha
-    log_erros = planilha.with_name("log_erros_mercado_pago.txt")
+    log_erros = planilha.with_suffix(".txt")
 
     return ArquivosExecucao(planilha=planilha, log_erros=log_erros)
 
@@ -1025,6 +1025,140 @@ async def clicar_atividade_vinculada(pagina: Page, aguardar_url: bool = True) ->
     raise ErroNavegacao("Não consegui abrir 'Atividade vinculada' após várias tentativas.")
 
 
+async def clicar_descricao_venda(pagina: Page) -> None:
+    """Abre o card da venda após entrar em Atividade vinculada.
+
+    Após atualização do Mercado Pago, a tela passou a exibir um bloco intermediário
+    com "Descrição da venda" e o nome do produto. O robô precisa clicar nesse bloco
+    antes de procurar "Conferir detalhes".
+    """
+    log_info("Tentando clicar na descrição da venda...")
+    await aguardar_carregamento_basico(pagina)
+
+    if await existe_texto(pagina, "Conferir detalhes", exact=True, timeout=1_500):
+        log_debug("'Conferir detalhes' já está visível; pulando clique na descrição da venda.")
+        return
+
+    erro_final: Exception | None = None
+
+    for tentativa in range(1, 4):
+        try:
+            log_info(f"Tentativa Descrição da venda {tentativa}/3")
+
+            descricao = pagina.get_by_text("Descrição da venda", exact=True).first
+            await descricao.wait_for(state="visible", timeout=TIMEOUT_MEDIO)
+            await descricao.scroll_into_view_if_needed(timeout=10_000)
+
+            candidatos = [
+                descricao.locator("xpath=ancestor::*[self::a or self::button or @role='button'][1]"),
+                descricao.locator("xpath=ancestor::*[contains(@class, 'andes-card')][1]"),
+                descricao.locator("xpath=ancestor::div[1]"),
+                descricao.locator("xpath=ancestor::div[2]"),
+                descricao.locator("xpath=ancestor::div[3]"),
+                descricao,
+            ]
+
+            for candidato in candidatos:
+                try:
+                    if await candidato.count() == 0:
+                        continue
+
+                    alvo = candidato.first
+                    caixa = await alvo.bounding_box()
+                    if not caixa:
+                        continue
+
+                    await alvo.click(force=True, timeout=5_000)
+                    await aguardar_carregamento_basico(pagina, timeout=10_000)
+                    await aguardar_estabilizacao_visual(pagina, 800)
+
+                    if await existe_texto(pagina, "Conferir detalhes", exact=True, timeout=4_000):
+                        log_ok("Descrição da venda aberta.")
+                        return
+
+                    if await existe_texto(pagina, "Ver detalhes da venda", exact=True, timeout=2_000):
+                        log_ok("Descrição da venda aberta.")
+                        return
+
+                except Exception as erro_candidato:
+                    erro_final = erro_candidato
+                    log_debug(f"Candidato de clique na descrição da venda falhou: {erro_candidato}")
+
+            # Fallback: clique no centro visual do texto. Em alguns layouts, o listener
+            # fica no card pai e o evento sobe por bubbling.
+            caixa_descricao = await descricao.bounding_box()
+            if caixa_descricao:
+                await pagina.mouse.click(
+                    caixa_descricao["x"] + caixa_descricao["width"] / 2,
+                    caixa_descricao["y"] + caixa_descricao["height"] / 2,
+                )
+                await aguardar_carregamento_basico(pagina, timeout=10_000)
+                await aguardar_estabilizacao_visual(pagina, 800)
+
+                if await existe_texto(pagina, "Conferir detalhes", exact=True, timeout=4_000):
+                    log_ok("Descrição da venda aberta.")
+                    return
+
+                if await existe_texto(pagina, "Ver detalhes da venda", exact=True, timeout=2_000):
+                    log_ok("Descrição da venda aberta.")
+                    return
+
+        except Exception as erro:
+            erro_final = erro
+            log_warn(f"Falhou ao clicar em Descrição da venda na tentativa {tentativa}: {erro}")
+            await aguardar_estabilizacao_visual(pagina, 500)
+
+    raise ErroNavegacao(
+        "Não consegui abrir o bloco 'Descrição da venda' após clicar em Atividade vinculada."
+    ) from erro_final
+
+
+async def clicar_ver_detalhes_da_venda(pagina: Page) -> None:
+    """Avança da descrição/modal da venda para a tela final de detalhes."""
+    await aguardar_carregamento_basico(pagina)
+    await aguardar_estabilizacao_visual(pagina, 500)
+
+    # Layout antigo/intermediário: antes do botão final havia "Conferir detalhes".
+    if await existe_texto(pagina, "Conferir detalhes", exact=True, timeout=2_000):
+        conferir = pagina.get_by_text("Conferir detalhes", exact=True).first
+        await conferir.scroll_into_view_if_needed(timeout=10_000)
+        await conferir.click(force=True, timeout=10_000)
+        await aguardar_carregamento_basico(pagina, timeout=10_000)
+        await aguardar_estabilizacao_visual(pagina, 500)
+
+    erro_final: Exception | None = None
+
+    for tentativa in range(1, 4):
+        try:
+            log_info(f"Tentativa Ver detalhes da venda {tentativa}/3")
+
+            candidatos = [
+                pagina.get_by_role("button", name=re.compile(r"Ver detalhes da venda", re.IGNORECASE)).first,
+                pagina.get_by_text("Ver detalhes da venda", exact=True).first,
+                pagina.locator("text=/Ver detalhes da venda/i").first,
+            ]
+
+            for candidato in candidatos:
+                try:
+                    await candidato.wait_for(state="visible", timeout=8_000)
+                    await candidato.scroll_into_view_if_needed(timeout=10_000)
+                    await candidato.click(force=True, timeout=10_000)
+                    await aguardar_carregamento_basico(pagina, timeout=15_000)
+                    await aguardar_estabilizacao_visual(pagina, 700)
+                    log_ok("Botão 'Ver detalhes da venda' acionado.")
+                    return
+                except Exception as erro_candidato:
+                    erro_final = erro_candidato
+                    log_debug(f"Candidato 'Ver detalhes da venda' falhou: {erro_candidato}")
+
+        except Exception as erro:
+            erro_final = erro
+            log_warn(f"Falhou ao clicar em Ver detalhes da venda na tentativa {tentativa}: {erro}")
+            await aguardar_estabilizacao_visual(pagina, 500)
+
+    raise ErroNavegacao("Não consegui clicar em 'Ver detalhes da venda'.") from erro_final
+
+
 async def extrair_venda_da_guia(item_extraido: ItemExtrato, guia: Page) -> Venda:
     await aguardar_carregamento_basico(guia)
 
@@ -1032,14 +1166,8 @@ async def extrair_venda_da_guia(item_extraido: ItemExtrato, guia: Page) -> Venda
         raise ErroNavegacao("Atividade vinculada não encontrada.")
 
     await clicar_atividade_vinculada(guia)
-
-    conferir = await esperar_texto_visivel(guia, "Conferir detalhes", exact=True, timeout=TIMEOUT_MEDIO)
-    await conferir.click()
-    await aguardar_carregamento_basico(guia)
-
-    botao = await esperar_texto_visivel(guia, "Ver detalhes da venda", exact=True, timeout=TIMEOUT_MEDIO)
-    await botao.click()
-    await aguardar_carregamento_basico(guia)
+    await clicar_descricao_venda(guia)
+    await clicar_ver_detalhes_da_venda(guia)
 
     numero_venda = re.sub(r"\D", "", await extrair_numero_venda(guia) or "")
     if not numero_venda:
@@ -1588,7 +1716,8 @@ def salvar_log_erros(erros: list[ErroItem], arquivos: ArquivosExecucao) -> None:
 
     arquivos.log_erros.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(arquivos.log_erros, "w", encoding="utf-8") as log:
+    with open(arquivos.log_erros, "a", encoding="utf-8") as log:
+        log.write("\n")
         log.write("=" * 80 + "\n")
         log.write(f"EXECUÇÃO: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
         log.write(f"ARQUIVO EXCEL: {arquivos.planilha}\n")
